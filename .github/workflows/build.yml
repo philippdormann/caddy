@@ -156,4 +156,4 @@ jobs:
           set -euo pipefail
           image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
           docker buildx imagetools inspect "${image}"
-          docker run --rm "${image}" version
+          docker run --rm "${image}" caddy version
