@@ -152,6 +152,10 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "artifacts/caddy_${VERSION}_checksums.txt"
           echo "Upstream signature verified for v${VERSION}."
+          # Canonical name expected by the Dockerfile; tarballs keep their
+          # versioned names and are selected per-architecture at build time.
+          mv "artifacts/caddy_${VERSION}_checksums.txt" artifacts/checksums.txt
+          rm "artifacts/caddy_${VERSION}_checksums.txt.sig" "artifacts/caddy_${VERSION}_checksums.txt.pem"
 
       - name: Log in to GHCR
         if: steps.check.outputs.rebuild == 'true'
