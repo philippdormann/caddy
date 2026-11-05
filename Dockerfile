@@ -1,21 +1,18 @@
 # Caddy mirror image - tracks upstream caddyserver/caddy releases.
 # https://github.com/philippdormann/caddy
 #
-# Built for linux/amd64 + linux/arm64 only. Base is rolling alpine:3,
-# digest-pinned at build time via ALPINE_PIN, so every build is reproducible
-# and the exact base is recorded in the image labels. This differs from the
+# Built for linux/amd64 + linux/arm64 only. The base follows the rolling
+# alpine:3 tag, but every build must name the exact digest via ALPINE_PIN
+# (CI resolves it fresh each run) - there is no floating default, so a build
+# can never silently float on an unpinned base. This differs from the
 # official image, which pins the Alpine minor in the Dockerfile instead.
 #
-# Local builds need the upstream artifacts in ./artifacts/ first, e.g.:
-#   version=2.11.9
-#   mkdir -p artifacts
-#   for f in checksums.txt checksums.txt.sig checksums.txt.pem \
-#            linux_amd64.tar.gz linux_arm64.tar.gz; do
-#     curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v${version}/caddy_${version}_${f}"
-#   done
-#   mv caddy_* checksums* artifacts/
-# (CI downloads these and verifies the Sigstore signature before building.)
-ARG ALPINE_PIN=3
+# Local builds: pass the pinned digest explicitly, e.g.:
+#   pin="3@$(docker buildx imagetools inspect alpine:3 | grep -m1 Digest: | awk '{print $2}')
+#   docker buildx build --build-arg ALPINE_PIN="${pin}" --build-arg ... .
+# (CI downloads the upstream artifacts and verifies the Sigstore signature
+# before building; see .github/workflows/build.yml.)
+ARG ALPINE_PIN
 
 # Stage 1: integrity-check + prepare the binary.
 # Build tooling (libcap) never lands in the runtime image.

@@ -73,15 +73,18 @@ mv caddy_* checksums* artifacts/
 docker buildx build --build-arg CADDY_VERSION="${version}" --build-arg BASE_DIGEST=local .
 ```
 
-`ALPINE_PIN` defaults to `3` for local builds; CI passes the digest-pinned
-`3@sha256:…` reference instead. To reproduce a published build exactly, inspect
-its `org.opencontainers.image.base.digest` label and pass that digest.
+`ALPINE_PIN` has no default: local builds must pass the exact digest, e.g.
+`--build-arg ALPINE_PIN="3@$(docker buildx imagetools inspect alpine:3 | grep -m1 Digest: | awk '{print $2}')"`.
+CI passes the digest-pinned `3@sha256:…` reference it resolved and verified.
+To reproduce a published build exactly, inspect its
+`org.opencontainers.image.base.digest` label and pass that digest.
 
 ## Differences vs. the official `library/caddy` image
 
 - Only `linux/amd64` + `linux/arm64` (no armv6/v7, ppc64le, riscv64, s390x, Windows).
-- Base is rolling `alpine:3` instead of a pinned Alpine minor, so security rebuilds
-  land automatically. The base is **digest-pinned per build** for reproducibility.
+- Base tracks rolling `alpine:3` for freshness instead of a pinned Alpine minor,
+  so security rebuilds land automatically — but every build uses the
+  **digest-pinned** base it resolved (`alpine:3@sha256:…`), never the floating tag.
 - No `builder`/`xcaddy` variant (add one if needed — see the official
   [caddy-docker](https://github.com/caddyserver/caddy-docker) repo for reference).
 - Full-version tags (e.g. `2.11.9`) move if the Alpine base is rebuilt, same as

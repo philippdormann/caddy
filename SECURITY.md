@@ -3,8 +3,10 @@
 ## Supported versions
 
 Only the latest published build (floating tags `latest`/`alpine`/`2`) is
-supported. It always tracks the latest stable upstream Caddy release on a
-rolling `alpine:3` base, rebuilt automatically (see below).
+supported. It always tracks the latest stable upstream Caddy release on the
+latest Alpine 3.x base: the workflow follows the rolling `alpine:3` tag but
+every build uses the digest it resolves to — a floating base is never built
+(see below).
 
 ## Rebuild policy
 
@@ -12,8 +14,8 @@ The [build workflow](.github/workflows/build.yml) runs every 6 hours and
 rebuilds when either changes:
 
 - a new stable upstream Caddy release, or
-- a new `alpine:3` base image (picks up Alpine security fixes without waiting
-  for a Caddy release).
+- a new Alpine 3.x base image (i.e. the `alpine:3` tag moves to a new digest,
+  which picks up Alpine security fixes without waiting for a Caddy release).
 
 The base is digest-pinned per build, so each dated build tag
 (e.g. `2.11.9-20261106-15`) immutably identifies one Caddy version on one
