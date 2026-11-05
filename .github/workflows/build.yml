@@ -1,0 +1,159 @@
+name: Build and publish Caddy image
+
+on:
+  schedule:
+    # Check for new upstream Caddy releases / rebuilt Alpine base images
+    # every 6 hours.
+    - cron: "11 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      caddy_version:
+        description: "Caddy version to build (e.g. 2.11.9). Empty = latest upstream release."
+        required: false
+        default: ""
+      force:
+        description: "Rebuild and push even if the image is already up to date."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-publish
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: philippdormann/caddy
+  PLATFORMS: linux/amd64,linux/arm64
+  ALPINE_MAJOR: "3"
+
+jobs:
+  build:
+    name: Build and push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Resolve Caddy version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.caddy_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            tag="${INPUT_VERSION}"
+          else
+            tag="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              https://api.github.com/repos/caddyserver/caddy/releases/latest | jq -r '.tag_name')"
+          fi
+          version="${tag#v}"
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected version format: ${tag}" >&2
+            exit 1
+          fi
+          minor="${version%.*}"
+          major="${version%%.*}"
+          {
+            echo "version=${version}"
+            echo "minor=${minor}"
+            echo "major=${major}"
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}-alpine"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${minor}"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${minor}-alpine"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${major}"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${major}-alpine"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:alpine"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Building Caddy v${version} (tags: ${minor}, ${major}, latest)"
+
+      - name: Resolve current Alpine base digest
+        id: base
+        run: |
+          set -euo pipefail
+          token="$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/alpine:pull" | jq -r '.token')"
+          digest="$(curl -fsSL -o /dev/null -D - \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            "https://registry-1.docker.io/v2/library/alpine/manifests/${{ env.ALPINE_MAJOR }}" \
+            | grep -i '^docker-content-digest:' | tr -d '\r' | awk '{print $2}')"
+          if [ -z "${digest}" ]; then
+            echo "Failed to resolve alpine:${{ env.ALPINE_MAJOR }} digest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "alpine:${{ env.ALPINE_MAJOR }} index digest: ${digest}"
+
+      - name: Check whether image is already up to date
+        id: check
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
+          current=""
+          # crane reads the image config without pulling any layers
+          current="$(docker run --rm gcr.io/go-containerregistry/crane:latest \
+            config --platform linux/amd64 "${image}" 2>/dev/null \
+            | jq -r '.config.Labels["org.opencontainers.image.base.digest"] // empty' || true)"
+          echo "Published image base digest: ${current:-<none>}"
+          echo "Current Alpine base digest:  ${{ steps.base.outputs.digest }}"
+          rebuild="true"
+          if [ "${FORCE}" = "true" ]; then
+            echo "Forced rebuild requested."
+          elif [ "${current}" = "${{ steps.base.outputs.digest }}" ]; then
+            echo "Image is already up to date - skipping build."
+            rebuild="false"
+          else
+            echo "Rebuild needed (new version or new base image)."
+          fi
+          echo "rebuild=${rebuild}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        if: steps.check.outputs.rebuild == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        if: steps.check.outputs.rebuild == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.rebuild == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        if: steps.check.outputs.rebuild == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          pull: true
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            ALPINE_VERSION=${{ env.ALPINE_MAJOR }}
+            CADDY_VERSION=${{ steps.version.outputs.version }}
+            BASE_DIGEST=${{ steps.base.outputs.digest }}
+
+      - name: Verify published image
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          set -euo pipefail
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
+          docker buildx imagetools inspect "${image}"
+          docker run --rm "${image}" version
