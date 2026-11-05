@@ -8,6 +8,7 @@
 ARG ALPINE_VERSION=3
 FROM alpine:${ALPINE_VERSION}
 
+ARG ALPINE_VERSION
 ARG CADDY_VERSION
 ARG BASE_DIGEST=unknown
 ARG TARGETARCH
@@ -38,11 +39,11 @@ RUN set -eux; \
 		arm64) binArch='arm64' ;; \
 		*) echo >&2 "error: unsupported architecture (${TARGETARCH}) - this image supports amd64 and arm64 only"; exit 1 ;; \
 	esac; \
-	wget -O /tmp/caddy.tar.gz "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz"; \
+	wget -O "/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz" "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz"; \
 	wget -O /tmp/caddy_checksums.txt "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_checksums.txt"; \
 	(cd /tmp && grep -E "  caddy_${CADDY_VERSION}_linux_${binArch}\.tar\.gz$" caddy_checksums.txt | sha512sum -c -); \
-	tar x -z -f /tmp/caddy.tar.gz -C /usr/bin caddy; \
-	rm -f /tmp/caddy.tar.gz /tmp/caddy_checksums.txt; \
+	tar x -z -f "/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz" -C /usr/bin caddy; \
+	rm -f "/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz" /tmp/caddy_checksums.txt; \
 	setcap cap_net_bind_service=+p /usr/bin/caddy; \
 	chmod +x /usr/bin/caddy; \
 	caddy version
