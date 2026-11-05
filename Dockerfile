@@ -70,9 +70,9 @@ COPY --from=fetcher /out/caddy /usr/bin/caddy
 RUN set -eux; \
 	apk add --no-cache libcap; \
 	setcap cap_net_bind_service=+p /usr/bin/caddy; \
-	apk del libcap; \
 	chmod +x /usr/bin/caddy; \
 	getcap /usr/bin/caddy | grep -q cap_net_bind_service; \
+	apk del libcap; \
 	caddy version
 
 # See https://caddyserver.com/docs/conventions#file-locations for details
