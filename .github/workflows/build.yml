@@ -222,7 +222,7 @@ jobs:
 
       - name: Scan image with Trivy
         if: steps.check.outputs.rebuild == 'true'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master 2026-11-05, no tags published upstream - refresh manually
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: sarif
@@ -239,7 +239,7 @@ jobs:
 
       - name: Gate on fixable CRITICAL vulnerabilities
         if: steps.check.outputs.rebuild == 'true'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master 2026-11-05, no tags published upstream - refresh manually
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: table
