@@ -17,9 +17,13 @@ on:
         type: boolean
         default: false
 
+# All third-party actions are pinned to commit SHAs (see Dependabot config);
+# the trailing comments record the moving tag each SHA was taken from.
 permissions:
   contents: read
   packages: write
+  id-token: write # keyless Cosign signing
+  security-events: write # Trivy SARIF upload to code scanning
 
 concurrency:
   group: build-publish
@@ -30,6 +34,10 @@ env:
   IMAGE_NAME: philippdormann/caddy
   PLATFORMS: linux/amd64,linux/arm64
   ALPINE_MAJOR: "3"
+  # Pinned to avoid pulling a floating tag inside the trust path.
+  # Check periodically for updates: docker buildx imagetools inspect
+  # gcr.io/go-containerregistry/crane:latest | grep Digest
+  CRANE_IMAGE: gcr.io/go-containerregistry/crane@sha256:61bc716946c2779e1dc0fb8068d116edf8de10e5402262c17e8e4904ddcc14ac
 
 jobs:
   build:
@@ -37,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Resolve Caddy version
         id: version
@@ -102,7 +110,7 @@ jobs:
           image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
           current=""
           # crane reads the image config without pulling any layers
-          current="$(docker run --rm gcr.io/go-containerregistry/crane:latest \
+          current="$(docker run --rm "${{ env.CRANE_IMAGE }}" \
             config --platform linux/amd64 "${image}" 2>/dev/null \
             | jq -r '.config.Labels["org.opencontainers.image.base.digest"] // empty' || true)"
           echo "Published image base digest: ${current:-<none>}"
@@ -118,9 +126,36 @@ jobs:
           fi
           echo "rebuild=${rebuild}" >> "${GITHUB_OUTPUT}"
 
+      - name: Install Cosign
+        if: steps.check.outputs.rebuild == 'true'
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Download and Sigstore-verify upstream release artifacts
+        if: steps.check.outputs.rebuild == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          base="https://github.com/caddyserver/caddy/releases/download/v${VERSION}"
+          for f in "checksums.txt" "checksums.txt.sig" "checksums.txt.pem" \
+                   "linux_amd64.tar.gz" "linux_arm64.tar.gz"; do
+            curl -fsSL -o "artifacts/caddy_${VERSION}_${f}" "${base}/caddy_${VERSION}_${f}"
+          done
+          # Authenticity: verify the Fulcio-issued signature from the upstream
+          # release workflow. (The Dockerfile additionally checks the sha512
+          # of each tarball against checksums.txt for integrity.)
+          cosign verify-blob \
+            --certificate "artifacts/caddy_${VERSION}_checksums.txt.pem" \
+            --signature "artifacts/caddy_${VERSION}_checksums.txt.sig" \
+            --certificate-identity "https://github.com/caddyserver/caddy/.github/workflows/release.yml@refs/tags/v${VERSION}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "artifacts/caddy_${VERSION}_checksums.txt"
+          echo "Upstream signature verified for v${VERSION}."
+
       - name: Log in to GHCR
         if: steps.check.outputs.rebuild == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -128,15 +163,16 @@ jobs:
 
       - name: Set up QEMU
         if: steps.check.outputs.rebuild == 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.rebuild == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and push
+        id: build
         if: steps.check.outputs.rebuild == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: ${{ env.PLATFORMS }}
@@ -145,10 +181,61 @@ jobs:
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Explicit so a future default change can't silently drop supply-chain metadata.
+          sbom: true
+          provenance: mode=max
           build-args: |
             ALPINE_VERSION=${{ env.ALPINE_MAJOR }}
             CADDY_VERSION=${{ steps.version.outputs.version }}
             BASE_DIGEST=${{ steps.base.outputs.digest }}
+
+      - name: Sign image with Cosign (keyless)
+        if: steps.check.outputs.rebuild == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # One signature on the multi-arch digest covers all tags pointing at it.
+          cosign sign --yes "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+
+      - name: Verify image signature (self-check)
+        if: steps.check.outputs.rebuild == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/build.yml@${{ github.ref }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+
+      - name: Scan image with Trivy
+        if: steps.check.outputs.rebuild == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          vuln-type: os,library
+
+      - name: Upload Trivy results to code scanning
+        if: steps.check.outputs.rebuild == 'true'
+        uses: github/codeql-action/upload-sarif@9418214df1f2c4b8128c770156c409013b07d6b9 # v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      - name: Gate on fixable CRITICAL vulnerabilities
+        if: steps.check.outputs.rebuild == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          format: table
+          severity: CRITICAL
+          vuln-type: os,library
+          ignore-unfixed: true
+          exit-code: '1'
 
       - name: Verify published image
         if: steps.check.outputs.rebuild == 'true'

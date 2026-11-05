@@ -1,1 +1,3 @@
 .DS_Store
+artifacts/
+trivy-results.sarif

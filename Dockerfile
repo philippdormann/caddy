@@ -5,7 +5,43 @@
 # regular rebuilds pick up Alpine security fixes without waiting for a new
 # Caddy release. This intentionally differs from the official image, which
 # pins the Alpine minor version.
+#
+# Local builds need the upstream artifacts in ./artifacts/ first, e.g.:
+#   version=2.11.9
+#   mkdir -p artifacts
+#   for f in checksums.txt checksums.txt.sig checksums.txt.pem \
+#            linux_amd64.tar.gz linux_arm64.tar.gz; do
+#     curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v${version}/caddy_${version}_${f}"
+#   done
+#   mv caddy_* checksums* artifacts/
+# (CI downloads these and verifies the Sigstore signature before building.)
 ARG ALPINE_VERSION=3
+
+# Stage 1: integrity-check + prepare the binary.
+# Build tooling (libcap) never lands in the runtime image.
+FROM alpine:${ALPINE_VERSION} AS fetcher
+ARG CADDY_VERSION
+ARG TARGETARCH
+RUN apk add --no-cache libcap
+# Populated and Sigstore-verified by CI (see .github/workflows/build.yml).
+COPY artifacts/checksums.txt /tmp/caddy_checksums.txt
+COPY artifacts/caddy_*_linux_*.tar.gz /tmp/
+RUN set -eux; \
+	if [ -z "${CADDY_VERSION:-}" ]; then echo "CADDY_VERSION build arg is required" >&2; exit 1; fi; \
+	case "${TARGETARCH}" in \
+		amd64) binArch='amd64' ;; \
+		arm64) binArch='arm64' ;; \
+		*) echo >&2 "error: unsupported architecture (${TARGETARCH}) - this image supports amd64 and arm64 only"; exit 1 ;; \
+	esac; \
+	tarball="/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz"; \
+	(cd /tmp && grep -E "  caddy_${CADDY_VERSION}_linux_${binArch}\.tar\.gz$" caddy_checksums.txt | sha512sum -c -); \
+	mkdir -p /out; \
+	tar x -z -f "${tarball}" -C /out caddy; \
+	setcap cap_net_bind_service=+p /out/caddy; \
+	chmod +x /out/caddy; \
+	getcap /out/caddy
+
+# Stage 2: minimal runtime image.
 FROM alpine:${ALPINE_VERSION}
 
 ARG ALPINE_VERSION
@@ -16,7 +52,6 @@ ARG TARGETARCH
 RUN apk add --no-cache \
 	ca-certificates \
 	curl \
-	libcap \
 	mailcap
 
 RUN set -eux; \
@@ -30,21 +65,13 @@ RUN set -eux; \
 	wget -O /etc/caddy/Caddyfile "https://github.com/caddyserver/dist/raw/33ae08ff08d168572df2956ed14fbc4949880d94/config/Caddyfile"; \
 	wget -O /usr/share/caddy/index.html "https://github.com/caddyserver/dist/raw/33ae08ff08d168572df2956ed14fbc4949880d94/welcome/index.html"
 
-# Download the official upstream binary for this build's architecture and
-# verify it against the sha512 checksums published with the upstream release.
+COPY --from=fetcher /out/caddy /usr/bin/caddy
+
+# Fail the build if file capabilities did not survive the stage copy, then
+# smoke-test the binary for this platform (emulated via QEMU for arm64).
 RUN set -eux; \
-	if [ -z "${CADDY_VERSION:-}" ]; then echo "CADDY_VERSION build arg is required" >&2; exit 1; fi; \
-	case "${TARGETARCH}" in \
-		amd64) binArch='amd64' ;; \
-		arm64) binArch='arm64' ;; \
-		*) echo >&2 "error: unsupported architecture (${TARGETARCH}) - this image supports amd64 and arm64 only"; exit 1 ;; \
-	esac; \
-	wget -O "/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz" "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz"; \
-	wget -O /tmp/caddy_checksums.txt "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_checksums.txt"; \
-	(cd /tmp && grep -E "  caddy_${CADDY_VERSION}_linux_${binArch}\.tar\.gz$" caddy_checksums.txt | sha512sum -c -); \
-	tar x -z -f "/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz" -C /usr/bin caddy; \
-	rm -f "/tmp/caddy_${CADDY_VERSION}_linux_${binArch}.tar.gz" /tmp/caddy_checksums.txt; \
-	setcap cap_net_bind_service=+p /usr/bin/caddy; \
+	getcap /usr/bin/caddy | grep -q cap_net_bind_service || \
+		{ echo "file capabilities lost in COPY --from=fetcher" >&2; exit 1; }; \
 	chmod +x /usr/bin/caddy; \
 	caddy version
 

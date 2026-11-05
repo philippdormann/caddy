@@ -1,0 +1,9 @@
+# Keep pinned Actions up to date; each update comes as a PR for review.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"

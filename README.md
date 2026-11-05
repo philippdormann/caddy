@@ -1,5 +1,7 @@
 # Caddy images for `linux/amd64` + `linux/arm64` on GHCR
 
+[![Build and publish Caddy image](https://github.com/philippdormann/caddy/actions/workflows/build.yml/badge.svg)](https://github.com/philippdormann/caddy/actions/workflows/build.yml)
+
 Automatically tracks [upstream Caddy releases](https://github.com/caddyserver/caddy/releases)
 and publishes multi-arch images to `ghcr.io/philippdormann/caddy` — without waiting
 for the [Docker Official Images pipeline](https://github.com/caddyserver/caddy-docker/issues/417),
@@ -33,6 +35,40 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
 - You can also trigger a build manually via **Actions → Build and publish Caddy image →
   Run workflow**, optionally pinning a version or forcing a rebuild.
 
+## Supply-chain security
+
+- Upstream release tarballs are **Sigstore-verified** (`cosign verify-blob`
+  against the upstream release workflow identity) before every build, and each
+  tarball's **sha512** is re-checked inside the Dockerfile.
+- Published images are signed keyless with **Cosign**:
+
+  ```bash
+  cosign verify \
+    --certificate-identity "https://github.com/philippdormann/caddy/.github/workflows/build.yml@refs/heads/main" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    ghcr.io/philippdormann/caddy:2
+  ```
+
+- Every build attaches an **SBOM** and **SLSA provenance** attestation, and is
+  scanned with **Trivy** (findings in code scanning; fixable CRITICAL
+  OS/library CVEs fail the build). See [SECURITY.md](SECURITY.md).
+
+## Building locally
+
+The Dockerfile consumes upstream artifacts from `./artifacts/` (populated and
+Sigstore-verified by CI). To reproduce a build locally:
+
+```bash
+version=2.11.9
+mkdir -p artifacts
+for f in checksums.txt checksums.txt.sig checksums.txt.pem \
+         linux_amd64.tar.gz linux_arm64.tar.gz; do
+  curl -fsSLO "https://github.com/caddyserver/caddy/releases/download/v${version}/caddy_${version}_${f}"
+done
+mv caddy_* checksums* artifacts/
+docker buildx build --build-arg CADDY_VERSION="${version}" --build-arg BASE_DIGEST=local .
+```
+
 ## Differences vs. the official `library/caddy` image
 
 - Only `linux/amd64` + `linux/arm64` (no armv6/v7, ppc64le, riscv64, s390x, Windows).
@@ -42,3 +78,12 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
   [caddy-docker](https://github.com/caddyserver/caddy-docker) repo for reference).
 - Full-version tags (e.g. `2.11.9`) move if the Alpine base is rebuilt, same as
   official image rebuilds. Pin by digest if you need an immutable reference.
+- The runtime image is built in two stages: build tooling (`libcap`) never
+  ships, and the build fails if the `cap_net_bind_service` file capability
+  does not survive into the final image.
+
+## License
+
+Apache-2.0 (see [LICENSE](LICENSE)). The Dockerfile derives from the
+[official caddy-docker image](https://github.com/caddyserver/caddy-docker)
+(also Apache-2.0); Caddy itself is by Light Code Labs / the Caddy authors.
