@@ -1,10 +1,10 @@
 # Caddy mirror image - tracks upstream caddyserver/caddy releases.
 # https://github.com/philippdormann/caddy
 #
-# Built for linux/amd64 + linux/arm64 only. Base is alpine:3 (rolling) so
-# regular rebuilds pick up Alpine security fixes without waiting for a new
-# Caddy release. This intentionally differs from the official image, which
-# pins the Alpine minor version.
+# Built for linux/amd64 + linux/arm64 only. Base is rolling alpine:3,
+# digest-pinned at build time via ALPINE_PIN, so every build is reproducible
+# and the exact base is recorded in the image labels. This differs from the
+# official image, which pins the Alpine minor in the Dockerfile instead.
 #
 # Local builds need the upstream artifacts in ./artifacts/ first, e.g.:
 #   version=2.11.9
@@ -15,11 +15,11 @@
 #   done
 #   mv caddy_* checksums* artifacts/
 # (CI downloads these and verifies the Sigstore signature before building.)
-ARG ALPINE_VERSION=3
+ARG ALPINE_PIN=3
 
 # Stage 1: integrity-check + prepare the binary.
 # Build tooling (libcap) never lands in the runtime image.
-FROM alpine:${ALPINE_VERSION} AS fetcher
+FROM alpine:${ALPINE_PIN} AS fetcher
 ARG CADDY_VERSION
 ARG TARGETARCH
 # Populated and Sigstore-verified by CI (see .github/workflows/build.yml).
@@ -39,9 +39,9 @@ RUN set -eux; \
 	chmod +x /out/caddy
 
 # Stage 2: minimal runtime image.
-FROM alpine:${ALPINE_VERSION}
+FROM alpine:${ALPINE_PIN}
 
-ARG ALPINE_VERSION
+ARG ALPINE_PIN
 ARG CADDY_VERSION
 ARG BASE_DIGEST=unknown
 ARG TARGETARCH
@@ -87,7 +87,7 @@ LABEL org.opencontainers.image.title="Caddy" \
 	org.opencontainers.image.licenses="Apache-2.0" \
 	org.opencontainers.image.source="https://github.com/philippdormann/caddy" \
 	org.opencontainers.image.version="${CADDY_VERSION}" \
-	org.opencontainers.image.base.name="alpine:${ALPINE_VERSION}" \
+	org.opencontainers.image.base.name="alpine:${ALPINE_PIN}" \
 	org.opencontainers.image.base.digest="${BASE_DIGEST}"
 
 EXPOSE 80

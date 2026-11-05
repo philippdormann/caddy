@@ -15,6 +15,10 @@ rebuilds when either changes:
 - a new `alpine:3` base image (picks up Alpine security fixes without waiting
   for a Caddy release).
 
+The base is digest-pinned per build, so each dated build tag
+(e.g. `2.11.9-20261106-15`) immutably identifies one Caddy version on one
+exact base image.
+
 ## Supply-chain guarantees
 
 - Upstream release artifacts are verified with **Sigstore** (`cosign

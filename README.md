@@ -21,6 +21,7 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
 | `2.11`, `2.11-alpine` | minor | latest `2.11.x` build |
 | `2`, `2-alpine` | major | latest `2.x` build |
 | `latest`, `alpine` | floating | latest stable build |
+| `2.11.9-20261106-15` | dated build | immutable: one unique tag per build (`<version>-<date>-<run>`), never re-pushed — pin this for reproducible deployments |
 
 ## How it works
 
@@ -30,6 +31,9 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
   the `org.opencontainers.image.base.digest` label of the already published image.
 - It rebuilds (with `--pull`, so the base is always fresh) and pushes **only** when
   the Caddy version is new or the Alpine base changed. Otherwise the run is a no-op.
+- The build uses the **digest-pinned** base (`alpine:3@sha256:…`), so there is no
+  gap between the checked digest and the built image, and the exact base is
+  recorded in the image labels (`org.opencontainers.image.base.*`).
 - Binaries are the official upstream release tarballs, verified with `sha512sum`
   against the `checksums.txt` published alongside each upstream release.
 - You can also trigger a build manually via **Actions → Build and publish Caddy image →
@@ -69,15 +73,20 @@ mv caddy_* checksums* artifacts/
 docker buildx build --build-arg CADDY_VERSION="${version}" --build-arg BASE_DIGEST=local .
 ```
 
+`ALPINE_PIN` defaults to `3` for local builds; CI passes the digest-pinned
+`3@sha256:…` reference instead. To reproduce a published build exactly, inspect
+its `org.opencontainers.image.base.digest` label and pass that digest.
+
 ## Differences vs. the official `library/caddy` image
 
 - Only `linux/amd64` + `linux/arm64` (no armv6/v7, ppc64le, riscv64, s390x, Windows).
 - Base is rolling `alpine:3` instead of a pinned Alpine minor, so security rebuilds
-  land automatically.
+  land automatically. The base is **digest-pinned per build** for reproducibility.
 - No `builder`/`xcaddy` variant (add one if needed — see the official
   [caddy-docker](https://github.com/caddyserver/caddy-docker) repo for reference).
 - Full-version tags (e.g. `2.11.9`) move if the Alpine base is rebuilt, same as
-  official image rebuilds. Pin by digest if you need an immutable reference.
+  official image rebuilds. Pin by digest or use the immutable dated build tags
+  (e.g. `2.11.9-20261106-15`) if you need an immutable reference.
 - The runtime image is built in two stages: build tooling (`libcap`) never
   ships, and the build fails if the `cap_net_bind_service` file capability
   does not survive into the final image.

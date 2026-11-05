@@ -52,6 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ inputs.caddy_version }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           if [ -n "${INPUT_VERSION}" ]; then
@@ -67,10 +68,14 @@ jobs:
           fi
           minor="${version%.*}"
           major="${version%%.*}"
+          # Immutable per-build tag: never re-pushed (run number is unique),
+          # safe to pin for reproducible deployments.
+          build_tag="${version}-$(date -u +%Y%m%d)-${RUN_NUMBER}"
           {
             echo "version=${version}"
             echo "minor=${minor}"
             echo "major=${major}"
+            echo "build_tag=${build_tag}"
             echo "tags<<EOF"
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}"
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${version}-alpine"
@@ -78,11 +83,12 @@ jobs:
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${minor}-alpine"
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${major}"
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${major}-alpine"
+            echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${build_tag}"
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
             echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:alpine"
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
-          echo "Building Caddy v${version} (tags: ${minor}, ${major}, latest)"
+          echo "Building Caddy v${version} (tags: ${minor}, ${major}, latest, ${build_tag})"
 
       - name: Resolve current Alpine base digest
         id: base
@@ -99,6 +105,7 @@ jobs:
             exit 1
           fi
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "pin=${{ env.ALPINE_MAJOR }}@${digest}" >> "${GITHUB_OUTPUT}"
           echo "alpine:${{ env.ALPINE_MAJOR }} index digest: ${digest}"
 
       - name: Check whether image is already up to date
@@ -189,7 +196,7 @@ jobs:
           sbom: true
           provenance: mode=max
           build-args: |
-            ALPINE_VERSION=${{ env.ALPINE_MAJOR }}
+            ALPINE_PIN=${{ steps.base.outputs.pin }}
             CADDY_VERSION=${{ steps.version.outputs.version }}
             BASE_DIGEST=${{ steps.base.outputs.digest }}
 
