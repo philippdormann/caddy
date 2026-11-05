@@ -22,7 +22,6 @@ ARG ALPINE_VERSION=3
 FROM alpine:${ALPINE_VERSION} AS fetcher
 ARG CADDY_VERSION
 ARG TARGETARCH
-RUN apk add --no-cache libcap
 # Populated and Sigstore-verified by CI (see .github/workflows/build.yml).
 COPY artifacts/checksums.txt /tmp/caddy_checksums.txt
 COPY artifacts/caddy_*_linux_*.tar.gz /tmp/
@@ -37,9 +36,7 @@ RUN set -eux; \
 	(cd /tmp && grep -E "  caddy_${CADDY_VERSION}_linux_${binArch}\.tar\.gz$" caddy_checksums.txt | sha512sum -c -); \
 	mkdir -p /out; \
 	tar x -z -f "${tarball}" -C /out caddy; \
-	setcap cap_net_bind_service=+p /out/caddy; \
-	chmod +x /out/caddy; \
-	getcap /out/caddy
+	chmod +x /out/caddy
 
 # Stage 2: minimal runtime image.
 FROM alpine:${ALPINE_VERSION}
@@ -67,12 +64,15 @@ RUN set -eux; \
 
 COPY --from=fetcher /out/caddy /usr/bin/caddy
 
-# Fail the build if file capabilities did not survive the stage copy, then
-# smoke-test the binary for this platform (emulated via QEMU for arm64).
+# setcap lives in the final image only transiently: installed, applied and
+# removed again within a single layer, so no build tooling ships.
+# The getcap assertion fails the build if the capability is not effective.
 RUN set -eux; \
-	getcap /usr/bin/caddy | grep -q cap_net_bind_service || \
-		{ echo "file capabilities lost in COPY --from=fetcher" >&2; exit 1; }; \
+	apk add --no-cache libcap; \
+	setcap cap_net_bind_service=+p /usr/bin/caddy; \
+	apk del libcap; \
 	chmod +x /usr/bin/caddy; \
+	getcap /usr/bin/caddy | grep -q cap_net_bind_service; \
 	caddy version
 
 # See https://caddyserver.com/docs/conventions#file-locations for details
