@@ -38,6 +38,12 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
   against the `checksums.txt` published alongside each upstream release.
 - You can also trigger a build manually via **Actions → Build and publish Caddy image →
   Run workflow**, optionally pinning a version or forcing a rebuild.
+- Pull requests get a **validation build**: same Dockerfile and checks, but
+  amd64-only, loaded locally instead of pushed, and never signed. The Trivy
+  gate still runs, so a vulnerable image cannot merge.
+- Pins without tags (trivy-action master, crane digest, Cosign binary) are
+  refreshed monthly by the [refresh-pins workflow](.github/workflows/refresh-pins.yml),
+  which opens a PR that the validation build then proves before merge.
 
 ## Supply-chain security
 
@@ -56,6 +62,8 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
 - Every build attaches an **SBOM** and **SLSA provenance** attestation, and is
   scanned with **Trivy** (findings in code scanning; fixable CRITICAL
   OS/library CVEs fail the build). See [SECURITY.md](SECURITY.md).
+- Even the tooling is pinned: the Cosign *binary* version plus the
+  tag-less trivy-action and crane pins are refreshed monthly via PR.
 
 ## Building locally
 
