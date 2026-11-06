@@ -1,0 +1,107 @@
+name: Refresh untagged pins
+
+on:
+  schedule:
+    # trivy-action publishes no tags, crane has no Dependabot coverage, and
+    # the Cosign binary version is an installer input - none of these get
+    # automated updates. Refresh them monthly via PR instead.
+    - cron: "0 9 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Refresh pins
+        id: refresh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          file=".github/workflows/build.yml"
+          today="$(date -u +%F)"
+          changed=""
+          # 1. trivy-action master HEAD (no tags published upstream)
+          latest_trivy="$(gh api repos/aquasecurity/trivy-action/commits/master --jq .sha)"
+          if ! grep -q "aquasecurity/trivy-action@${latest_trivy} " "${file}"; then
+            python3 - "${file}" "${latest_trivy}" "${today}" <<'EOF'
+          import re, sys
+          path, sha, today = sys.argv[1], sys.argv[2], sys.argv[3]
+          text = open(path).read()
+          text, n = re.subn(r"aquasecurity/trivy-action@[0-9a-f]{40} # master \d{4}-\d{2}-\d{2}",
+                             f"aquasecurity/trivy-action@{sha} # master {today}", text)
+          assert n == 2, f"expected 2 trivy pins, found {n}"
+          open(path, "w").write(text)
+          EOF
+            changed="${changed} trivy-action@${latest_trivy:0:12}"
+          fi
+          # 2. crane image digest (no tags to track, pinned by digest)
+          latest_crane="$(docker buildx imagetools inspect gcr.io/go-containerregistry/crane:latest | grep -m1 'Digest:' | awk '{print $2}')"
+          if [ -z "${latest_crane}" ]; then
+            echo "Failed to resolve crane digest" >&2
+            exit 1
+          fi
+          if ! grep -q "go-containerregistry/crane@${latest_crane}" "${file}"; then
+            python3 - "${file}" "${latest_crane}" <<'EOF'
+          import re, sys
+          path, digest = sys.argv[1], sys.argv[2]
+          text = open(path).read()
+          text, n = re.subn(r"gcr\.io/go-containerregistry/crane@sha256:[0-9a-f]{64}",
+                             f"gcr.io/go-containerregistry/crane@{digest}", text)
+          assert n == 1, f"expected 1 crane pin, found {n}"
+          open(path, "w").write(text)
+          EOF
+            changed="${changed} crane@${latest_crane:0:19}"
+          fi
+          # 3. Cosign binary version (installer input, invisible to Dependabot)
+          latest_cosign="$(gh api repos/sigstore/cosign/releases/latest --jq .tag_name)"
+          if ! grep -q "cosign-release: ${latest_cosign}$" "${file}"; then
+            python3 - "${file}" "${latest_cosign}" <<'EOF'
+          import re, sys
+          path, version = sys.argv[1], sys.argv[2]
+          text = open(path).read()
+          text, n = re.subn(r"cosign-release: v[\d.]+", f"cosign-release: {version}", text)
+          assert n == 1, f"expected 1 cosign-release pin, found {n}"
+          open(path, "w").write(text)
+          EOF
+            changed="${changed} cosign@${latest_cosign}"
+          fi
+          if [ -n "${changed}" ]; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            echo "summary=${changed# }" >> "${GITHUB_OUTPUT}"
+            echo "Refreshes:${changed}"
+          else
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "All untagged pins are up to date."
+          fi
+
+      - name: Open update PR
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUMMARY: ${{ steps.refresh.outputs.summary }}
+        run: |
+          set -euo pipefail
+          branch="chore/refresh-untagged-pins-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Bot-owned branch: reset it to the latest base each run.
+          git checkout -B "${branch}"
+          git add .github/workflows/build.yml
+          git commit -m "chore(deps): refresh untagged pins (${SUMMARY})"
+          git push --force origin "${branch}"
+          if [ "$(gh pr list --head "${branch}" --state open --json number --jq length)" = "0" ]; then
+            gh pr create --base main --head "${branch}" \
+              --title "chore(deps): refresh untagged pins (${SUMMARY})" \
+              --body "Automated refresh of pins Dependabot cannot track (no tags): trivy-action master, crane digest, Cosign binary. The build workflow's PR validation run proves the new pins before merge."
+          fi
