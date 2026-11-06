@@ -145,7 +145,7 @@ jobs:
           # Pin the binary too: the installer otherwise floats to latest.
           # No tags for Dependabot to follow - drift is reported monthly
           # by the refresh-pins workflow.
-          cosign-release: v2.5.2
+          cosign-release: v2.6.5
 
       - name: Download and Sigstore-verify upstream release artifacts
         if: steps.check.outputs.rebuild == 'true'
