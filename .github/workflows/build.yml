@@ -39,7 +39,7 @@ env:
   PLATFORMS: linux/amd64,linux/arm64
   ALPINE_MAJOR: "3"
   # Pinned to avoid pulling a floating tag inside the trust path.
-  # Refreshed monthly by the refresh-pins workflow (no tags to track).
+  # No tags to track - drift is reported monthly by the refresh-pins workflow.
   CRANE_IMAGE: gcr.io/go-containerregistry/crane@sha256:61bc716946c2779e1dc0fb8068d116edf8de10e5402262c17e8e4904ddcc14ac
 
 jobs:
@@ -143,7 +143,8 @@ jobs:
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           # Pin the binary too: the installer otherwise floats to latest.
-          # Refreshed monthly by the refresh-pins workflow.
+          # No tags for Dependabot to follow - drift is reported monthly
+          # by the refresh-pins workflow.
           cosign-release: v2.5.2
 
       - name: Download and Sigstore-verify upstream release artifacts
@@ -235,7 +236,7 @@ jobs:
 
       - name: Scan image with Trivy
         if: steps.check.outputs.rebuild == 'true'
-        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master 2026-11-05, refreshed monthly by refresh-pins
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master 2026-11-05, drift reported monthly by refresh-pins (no tags upstream)
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: sarif
@@ -253,7 +254,7 @@ jobs:
 
       - name: Gate on fixable CRITICAL vulnerabilities
         if: steps.check.outputs.rebuild == 'true'
-        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master 2026-11-05, refreshed monthly by refresh-pins
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # master 2026-11-05, drift reported monthly by refresh-pins (no tags upstream)
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           format: table

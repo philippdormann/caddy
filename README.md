@@ -42,8 +42,10 @@ All tags are Alpine-based and multi-arch (`linux/amd64`, `linux/arm64`):
   amd64-only, loaded locally instead of pushed, and never signed. The Trivy
   gate still runs, so a vulnerable image cannot merge.
 - Pins without tags (trivy-action master, crane digest, Cosign binary) are
-  refreshed monthly by the [refresh-pins workflow](.github/workflows/refresh-pins.yml),
-  which opens a PR that the validation build then proves before merge.
+  checked monthly by the [refresh-pins workflow](.github/workflows/refresh-pins.yml),
+  which files an issue on drift (workflows can't open PRs against workflow files
+  with `GITHUB_TOKEN`, and a standing PAT isn't worth the trade). Applying it goes
+  through a normal PR, which the validation build proves before merge.
 
 ## Supply-chain security
 

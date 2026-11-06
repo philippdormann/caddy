@@ -4,13 +4,20 @@ on:
   schedule:
     # trivy-action publishes no tags, crane has no Dependabot coverage, and
     # the Cosign binary version is an installer input - none of these get
-    # automated updates. Refresh them monthly via PR instead.
+    # automated updates. Check monthly and file an issue on drift.
+    #
+    # Note: this workflow deliberately opens an *issue*, not a PR. GitHub
+    # refuses pushes to .github/workflows/* with GITHUB_TOKEN (workflows
+    # permission boundary), and minting a standing PAT just to bypass that
+    # would trade away more security than the automation is worth.
+    # Applying the issue is a two-line edit that goes through a normal PR,
+    # which the build workflow's validation run then proves before merge.
     - cron: "0 9 1 * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  issues: write
 
 jobs:
   refresh:
@@ -22,86 +29,89 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Refresh pins
+      - name: Check for newer pins
         id: refresh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           file=".github/workflows/build.yml"
-          today="$(date -u +%F)"
-          changed=""
+          report="$(mktemp)"
+          {
+            echo "Untagged pins with upstream drift (checked $(date -u +%F)):"
+            echo
+          } > "${report}"
+          drift="false"
           # 1. trivy-action master HEAD (no tags published upstream)
-          latest_trivy="$(gh api repos/aquasecurity/trivy-action/commits/master --jq .sha)"
-          if ! grep -q "aquasecurity/trivy-action@${latest_trivy} " "${file}"; then
-            python3 - "${file}" "${latest_trivy}" "${today}" <<'EOF'
-          import re, sys
-          path, sha, today = sys.argv[1], sys.argv[2], sys.argv[3]
-          text = open(path).read()
-          text, n = re.subn(r"aquasecurity/trivy-action@[0-9a-f]{40} # master \d{4}-\d{2}-\d{2}",
-                             f"aquasecurity/trivy-action@{sha} # master {today}", text)
-          assert n == 2, f"expected 2 trivy pins, found {n}"
-          open(path, "w").write(text)
-          EOF
-            changed="${changed} trivy-action@${latest_trivy:0:12}"
+          trivy_current="$(grep -oP 'aquasecurity/trivy-action@\K[0-9a-f]{40}' "${file}" | head -1)"
+          trivy_latest="$(gh api repos/aquasecurity/trivy-action/commits/master --jq .sha)"
+          if [ "${trivy_current}" != "${trivy_latest}" ]; then
+            drift="true"
+            {
+              echo "- trivy-action: \`${trivy_current:0:12}\` -> \`${trivy_latest:0:12}\`"
+              echo "  Replace \`aquasecurity/trivy-action@${trivy_current}\` with \`aquasecurity/trivy-action@${trivy_latest}\` (both occurrences) and update the date comment."
+              echo
+            } >> "${report}"
           fi
           # 2. crane image digest (no tags to track, pinned by digest)
-          latest_crane="$(docker buildx imagetools inspect gcr.io/go-containerregistry/crane:latest | grep -m1 'Digest:' | awk '{print $2}')"
-          if [ -z "${latest_crane}" ]; then
+          crane_current="$(grep -oP 'go-containerregistry/crane@\Ksha256:[0-9a-f]{64}' "${file}" | head -1)"
+          crane_latest="$(docker buildx imagetools inspect gcr.io/go-containerregistry/crane:latest | grep -m1 'Digest:' | awk '{print $2}')"
+          if [ -z "${crane_latest}" ]; then
             echo "Failed to resolve crane digest" >&2
             exit 1
           fi
-          if ! grep -q "go-containerregistry/crane@${latest_crane}" "${file}"; then
-            python3 - "${file}" "${latest_crane}" <<'EOF'
-          import re, sys
-          path, digest = sys.argv[1], sys.argv[2]
-          text = open(path).read()
-          text, n = re.subn(r"gcr\.io/go-containerregistry/crane@sha256:[0-9a-f]{64}",
-                             f"gcr.io/go-containerregistry/crane@{digest}", text)
-          assert n == 1, f"expected 1 crane pin, found {n}"
-          open(path, "w").write(text)
-          EOF
-            changed="${changed} crane@${latest_crane:0:19}"
+          if [ "${crane_current}" != "${crane_latest}" ]; then
+            drift="true"
+            {
+              echo "- crane: \`${crane_current:0:19}\` -> \`${crane_latest:0:19}\`"
+              echo "  Replace \`gcr.io/go-containerregistry/crane@${crane_current}\` with \`gcr.io/go-containerregistry/crane@${crane_latest}\`."
+              echo
+            } >> "${report}"
           fi
-          # 3. Cosign binary version (installer input, invisible to Dependabot)
-          latest_cosign="$(gh api repos/sigstore/cosign/releases/latest --jq .tag_name)"
-          if ! grep -q "cosign-release: ${latest_cosign}$" "${file}"; then
-            python3 - "${file}" "${latest_cosign}" <<'EOF'
-          import re, sys
-          path, version = sys.argv[1], sys.argv[2]
-          text = open(path).read()
-          text, n = re.subn(r"cosign-release: v[\d.]+", f"cosign-release: {version}", text)
-          assert n == 1, f"expected 1 cosign-release pin, found {n}"
-          open(path, "w").write(text)
-          EOF
-            changed="${changed} cosign@${latest_cosign}"
+          # 3. Cosign binary version (installer input, invisible to Dependabot).
+          # Track the latest v2 release; v3 is a new major line and needs a
+          # deliberate migration, not a silent bump.
+          cosign_current="$(grep -oP 'cosign-release: \Kv[\d.]+' "${file}" | head -1)"
+          cosign_latest="$(gh api "repos/sigstore/cosign/releases?per_page=20" --jq '[.[] | select(.tag_name | startswith("v2."))][0].tag_name')"
+          cosign_overall="$(gh api repos/sigstore/cosign/releases/latest --jq .tag_name)"
+          if [ "${cosign_current}" != "${cosign_latest}" ]; then
+            drift="true"
+            {
+              echo "- Cosign binary: \`${cosign_current}\` -> \`${cosign_latest}\`"
+              echo "  Replace \`cosign-release: ${cosign_current}\` with \`cosign-release: ${cosign_latest}\`."
+              echo
+            } >> "${report}"
           fi
-          if [ -n "${changed}" ]; then
-            echo "changed=true" >> "${GITHUB_OUTPUT}"
-            echo "summary=${changed# }" >> "${GITHUB_OUTPUT}"
-            echo "Refreshes:${changed}"
+          if [ "${cosign_overall}" != "${cosign_latest}" ]; then
+            {
+              echo "FYI: newest Cosign overall is \`${cosign_overall}\` (new major line - migrate deliberately, do not auto-apply)."
+              echo
+            } >> "${report}"
+          fi
+          echo "drift=${drift}" >> "${GITHUB_OUTPUT}"
+          if [ "${drift}" = "true" ]; then
+            summary="$(grep -E '^- ' "${report}" | head -3 | tr '\n' ' ')"
+            echo "summary=${summary}" >> "${GITHUB_OUTPUT}"
+            cat "${report}"
+            cp "${report}" /tmp/pin-refresh-report.md
           else
-            echo "changed=false" >> "${GITHUB_OUTPUT}"
             echo "All untagged pins are up to date."
           fi
 
-      - name: Open update PR
-        if: steps.refresh.outputs.changed == 'true'
+      - name: Open or update tracking issue
+        if: steps.refresh.outputs.drift == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUMMARY: ${{ steps.refresh.outputs.summary }}
         run: |
           set -euo pipefail
-          branch="chore/refresh-untagged-pins-$(date -u +%Y%m%d)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Bot-owned branch: reset it to the latest base each run.
-          git checkout -B "${branch}"
-          git add .github/workflows/build.yml
-          git commit -m "chore(deps): refresh untagged pins (${SUMMARY})"
-          git push --force origin "${branch}"
-          if [ "$(gh pr list --head "${branch}" --state open --json number --jq length)" = "0" ]; then
-            gh pr create --base main --head "${branch}" \
-              --title "chore(deps): refresh untagged pins (${SUMMARY})" \
-              --body "Automated refresh of pins Dependabot cannot track (no tags): trivy-action master, crane digest, Cosign binary. The build workflow's PR validation run proves the new pins before merge."
+          title="Refresh untagged pins"
+          body="$(cat /tmp/pin-refresh-report.md)
+          Apply via PR - the build workflow's validation run proves the new pins before merge."
+          existing="$(gh issue list --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+            echo "Updated existing issue #${existing}."
+          else
+            gh issue create --title "${title}" --body "${body}"
           fi
